@@ -28,15 +28,18 @@ if user_input:
     # backend call
     config = {"configurable": {"thread_id": "1"}}
 
-    response = workflow.invoke(
-        {"messages": [HumanMessage(content=user_input)]},
-        config=config
-    )
-
-    ai_reply = response["messages"][-1].content
 
     # Show AI response
-    st.session_state.messages.append({"role": "assistant", "content": ai_reply})
+    
 
     with st.chat_message("assistant"):
-        st.markdown(ai_reply)
+       ai_reply = st.write_stream(
+           message_chunk.content for message_chunk, metadata in  workflow.stream(
+               #initial state
+               {"messages": [HumanMessage(content=user_input)]},
+               #config
+               config = {"configurable": {"thread_id": "1"}},
+               stream_mode='messages' 
+           )
+        )
+    st.session_state.messages.append({"role": "assistant", "content": ai_reply})

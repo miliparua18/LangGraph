@@ -1,6 +1,6 @@
 import streamlit as st
 from langGraph_sqlite_backend import workflow, retrieve_all_threads
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 import uuid
 
 # ----------- Helper Functions -----------
@@ -10,91 +10,78 @@ def generate_thread_ID():
 
 def reset_chat():
     thread_id = generate_thread_ID()
-    st.session_state['thread_id'] = thread_id
-    st.session_state['messages'] = []
-
-    if thread_id not in st.session_state['chat_threads']:
-        st.session_state['chat_threads'].append(thread_id)
-
-    # default name
-    st.session_state['thread_names'][thread_id] = "New Chat"
-
-def add_threads(thread_id):
-    if thread_id not in st.session_state['chat_threads']:
-        st.session_state['chat_threads'].append(thread_id)
+    st.session_state.thread_id = thread_id
+    st.session_state.messages = []
+    if thread_id not in st.session_state.chat_threads:
+        st.session_state.chat_threads.append(thread_id)
+    st.session_state.thread_names[thread_id] = "New Chat"
 
 def load_conversation(thread_id):
+    """Fetches history from LangGraph and formats it for Streamlit UI."""
     state = workflow.get_state(config={"configurable": {"thread_id": thread_id}})
-    return state.values.get('messages', [])
+    messages = state.values.get('messages', [])
+    
+    formatted_messages = []
+    for msg in messages:
+        if isinstance(msg, HumanMessage):
+            formatted_messages.append({"role": "user", "content": msg.content})
+        elif isinstance(msg, AIMessage):
+            formatted_messages.append({"role": "assistant", "content": msg.content})
+    return formatted_messages
 
 # ----------- Streamlit Config -----------
 
-st.set_page_config(page_title="LangGraph Chatbot")
+st.set_page_config(page_title="LangGraph Chatbot", layout="wide")
 st.title("🤖 AI Chatbot")
 
 # ----------- Session State Init -----------
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-if "thread_id" not in st.session_state:
-    st.session_state.thread_id = generate_thread_ID()
-
 if "chat_threads" not in st.session_state:
-    st.session_state['chat_threads'] = retrieve_all_threads()
+    st.session_state.chat_threads = retrieve_all_threads()
 
 if "thread_names" not in st.session_state:
     st.session_state.thread_names = {}
 
-# Add current thread
-add_threads(st.session_state.thread_id)
+if "thread_id" not in st.session_state:
+    # Default to the first existing thread or create a new one
+    if st.session_state.chat_threads:
+        st.session_state.thread_id = st.session_state.chat_threads[0]
+    else:
+        st.session_state.thread_id = generate_thread_ID()
+        st.session_state.chat_threads.append(st.session_state.thread_id)
 
-# Ensure all threads have names
-for t_id in st.session_state.chat_threads:
-    if t_id not in st.session_state.thread_names:
-        st.session_state.thread_names[t_id] = "New Chat"
+if "messages" not in st.session_state:
+    st.session_state.messages = load_conversation(st.session_state.thread_id)
 
 # ----------- Sidebar -----------
 
 st.sidebar.title("LangGraph Chatbot")
 
-if st.sidebar.button("➕ New Chat"):
+if st.sidebar.button("➕ New Chat", use_container_width=True):
     reset_chat()
     st.rerun()
 
-st.sidebar.header("My Conversations")
+st.sidebar.divider()
+st.sidebar.subheader("Recent Conversations")
 
-for thread_id in st.session_state.chat_threads:
-    name = st.session_state.thread_names.get(thread_id, "New Chat")
+for t_id in st.session_state.chat_threads:
+    # Determine display name
+    if t_id not in st.session_state.thread_names:
+        history = load_conversation(t_id)
+        name = history[0]["content"][:25] + "..." if history else "Empty Chat"
+        st.session_state.thread_names[t_id] = name
+    else:
+        name = st.session_state.thread_names[t_id]
 
-    if st.sidebar.button(name, key=thread_id):
-        st.session_state.thread_id = thread_id
-
-        # Load messages from LangGraph
-        messages = load_conversation(thread_id)
-
-        temp_messages = []
-        for message in messages:
-            if isinstance(message, HumanMessage):
-                role = "user"
-            else:
-                role = "assistant"
-
-            temp_messages.append({
-                "role": role,
-                "content": message.content
-            })
-
-        st.session_state.messages = temp_messages
-
-        # ✅ Auto update name from first message (if exists)
-        if temp_messages:
-            st.session_state.thread_names[thread_id] = temp_messages[0]["content"][:25]
-
+    # Sidebar button for selecting thread
+    if st.sidebar.button(name, key=t_id, use_container_width=True):
+        st.session_state.thread_id = t_id
+        st.session_state.messages = load_conversation(t_id)
         st.rerun()
 
 # ----------- Display Messages -----------
 
+# Display existing conversation history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -104,37 +91,34 @@ for msg in st.session_state.messages:
 user_input = st.chat_input("Type your message...")
 
 if user_input:
-    # Save user message
-    st.session_state.messages.append({
-        "role": "user",
-        "content": user_input
-    })
-
+    # 1. Add and display user message
+    st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # ✅ Auto rename (first message only)
-    if len(st.session_state.messages) == 1:
-        st.session_state.thread_names[st.session_state.thread_id] = user_input[:25]
+    # 2. Update thread name if it's the first message
+    if len(st.session_state.messages) <= 2: # User message + potentially one response
+        st.session_state.thread_names[st.session_state.thread_id] = user_input[:25] + "..."
 
-    CONFIG = {"configurable": {"thread_id": st.session_state.thread_id}}
-
-    # ----------- Streaming Response -----------
-
-    full_response = ""
-
+    # 3. Stream assistant response
     with st.chat_message("assistant"):
+        placeholder = st.empty()
+        full_response = ""
+        
+        config = {"configurable": {"thread_id": st.session_state.thread_id}}
+        
+        # stream_mode="messages" yields message chunks
         for message_chunk, metadata in workflow.stream(
             {"messages": [HumanMessage(content=user_input)]},
-            config=CONFIG,
+            config=config,
             stream_mode="messages"
         ):
             if message_chunk.content:
-                st.write(message_chunk.content)
                 full_response += message_chunk.content
+                # Add a blinking cursor effect
+                placeholder.markdown(full_response + "▌")
 
-    # Save assistant response
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": full_response
-    })
+        placeholder.markdown(full_response)
+
+    # 4. Save final assistant response to session state
+    st.session_state.messages.append({"role": "assistant", "content": full_response})

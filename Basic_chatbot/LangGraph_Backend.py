@@ -5,18 +5,13 @@ from langchain_core.messages import BaseMessage, AIMessage, HumanMessage
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import InMemorySaver
 from dotenv import load_dotenv
+from model import huggingface_model
 import os
 
 load_dotenv()
 
 # Model 
-llm = HuggingFaceEndpoint(
-    repo_id="openai/gpt-oss-120b",
-    huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN"),
-    streaming=True
-)
-
-model = ChatHuggingFace(llm=llm)
+model = huggingface_model()
 
 # State
 class ChatState(TypedDict):

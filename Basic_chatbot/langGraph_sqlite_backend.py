@@ -1,53 +1,51 @@
 from langgraph.graph import StateGraph, START, END
 from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
-from typing import TypedDict, Annotated
+from typing import TypedDict, Annotated, List
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.sqlite import SqliteSaver
 from dotenv import load_dotenv
+from model import huggingface_model
 import os
 import sqlite3
+from Tool import get_graph_builder
 
 load_dotenv()
 
 # Model 
-llm = HuggingFaceEndpoint(
-    repo_id="openai/gpt-oss-120b",
-    huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN"),
-    streaming=True
-)
 
-model = ChatHuggingFace(llm=llm)
+model = huggingface_model()
 
 # State
 class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
-#Node (STREAMING)
-def chat_node(state: ChatState):
-    messages = state["messages"]
-    #send to llm 
-    output = model.invoke(messages)
-    return { "messages": [output] }
 
 #create database
 
 conn = sqlite3.connect(database='chatbot.db', check_same_thread=False)
 # Memory
 checkpointer = SqliteSaver(conn)
+builder = get_graph_builder()
 
-# Graph
-graph = StateGraph(ChatState)
-graph.add_node("chat_node", chat_node)
-graph.add_edge(START, "chat_node")
-graph.add_edge("chat_node", END)
-
-workflow = graph.compile(checkpointer=checkpointer)
+workflow = builder.compile(checkpointer=checkpointer)
 
 
-def retrieve_all_threads():
-    all_threads = set()
-    for checkpoint in checkpointer.list(None):
-        all_threads.add(checkpoint.config['configurable']['thread_id'])
 
-    return list(all_threads)
+#optimized thread retrieval
+def retrieve_all_threads() -> List[str]:
+    """
+    Directly queries the SQLite database for unique thread IDs.
+    Much more efficient than checkpointer.list() for large databases.
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='checkpoints'")
+        if not cur.fetchone():
+            return []
+            
+        cur.execute("SELECT DISTINCT thread_id FROM checkpoints")
+        return [row[0] for row in cur.fetchall()]
+    except Exception as e:
+        print(f"Error retrieving threads: {e}")
+        return []
